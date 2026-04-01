@@ -5,12 +5,34 @@ on:
     types: [opened, synchronize, reopened]
 
 jobs:
-  notify:
+  security-scan:
+    name: Trigger RedFlag CI Scan
     runs-on: ubuntu-latest
+
     steps:
-      - name: Send PR workflow details to RedFlag CI Webhook
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Send PR payload to RedFlag CI
         run: |
-          curl -X POST -H "Content-Type: application/json" -d '{
-            "repo_full_name": "${{ github.repository }}",
-            "pr_number": ${{ github.event.pull_request.number }}
-          }' ${{ secrets.REDFLAG_API_URL }}/webhook
+          curl -X POST \
+            -H "Content-Type: application/json" \
+            -H "X-Hub-Signature-256: ${{ secrets.WEBHOOK_SECRET }}" \
+            -d '{
+              "action": "opened",
+              "number": ${{ github.event.pull_request.number }},
+              "repository": {
+                "full_name": "${{ github.repository }}"
+              },
+              "pull_request": {
+                "number": ${{ github.event.pull_request.number }},
+                "head": {
+                  "sha": "${{ github.event.pull_request.head.sha }}"
+                }
+              }
+            }' \
+            ${{ secrets.REDFLAG_API_URL }}/webhook
+
+      - name: Report status
+        if: always()
+        run: echo "RedFlag CI scan triggered for PR #${{ github.event.pull_request.number }}"
