@@ -81,6 +81,19 @@ async def _get_headers(repo_full_name: str) -> dict:
     }
 
 
+async def extract_code_snippet(file_content: str, line: int, context: int = 5) -> str:
+    lines = file_content.split('\n')
+    start = max(0, line - context - 1)
+    end = min(len(lines), line + context)
+    return '\n'.join(lines[start:end])
+
+LANG_MAP = {
+    ".py": "python", ".js": "javascript", ".ts": "typescript",
+    ".tf": "hcl", ".yml": "yaml", ".yaml": "yaml",
+    ".java": "java", ".go": "go", ".rs": "rust"
+}
+
+
 # ─────────────────────────────────────────────
 #  FROZEN PUBLIC INTERFACE — Do NOT change signatures
 # ─────────────────────────────────────────────
