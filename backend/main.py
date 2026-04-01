@@ -1,39 +1,32 @@
 """
-main.py — FastAPI Application & API Endpoints
+main.py — FastAPI Application & API Endpoints v2
 Owner: Nikhil Virdi (NV)
 
-Exposes the frozen API endpoints:
+Frozen API endpoints with v2 response schema:
   GET /api/scans/{repo_id}
   GET /api/scans/{repo_id}/{pr_number}
 
-Also handles the webhook POST endpoint for local testing.
-In production, Lambda + API Gateway handles the webhook.
+v2 additions: multi-dimensional scores, compliance, cost, exploit, root cause
 """
 
 import os
 import json
 import logging
-import asyncio
-from typing import Optional
 from datetime import datetime, timezone
 
 import boto3
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
 
-# ─── App Init ──────────────────────────────────────────────
-
 app = FastAPI(
     title="RedFlag CI API",
-    description="AI-powered CI/CD security pipeline for vibe-coded repos.",
-    version="1.0.0",
+    description="AI-powered CI/CD security pipeline for vibe-coded repos. 7 problem statements, 1 pipeline.",
+    version="2.0.0",
 )
 
-# CORS — allow frontend dashboard to access API
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
@@ -45,20 +38,16 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# AWS clients
 REGION = os.getenv("AWS_REGION", "ap-south-1")
 TABLE_NAME = os.getenv("DYNAMODB_TABLE_NAME", "redflagci-scans")
-BUCKET_NAME = os.getenv("S3_BUCKET_NAME", "redflagci-reports")
+BUCKET_NAME = os.getenv("S3_BUCKET_NAME", "redflagci-reports-184574354000")
 
 
 def _get_dynamodb_table():
-    """Get DynamoDB table resource."""
-    dynamodb = boto3.resource("dynamodb", region_name=REGION)
-    return dynamodb.Table(TABLE_NAME)
+    return boto3.resource("dynamodb", region_name=REGION).Table(TABLE_NAME)
 
 
 def _get_s3_client():
-    """Get S3 client."""
     return boto3.client("s3", region_name=REGION)
 
 
@@ -66,49 +55,30 @@ def _get_s3_client():
 
 @app.get("/")
 def health_check():
-    """Health check endpoint."""
     return {
         "status": "ok",
         "service": "RedFlag CI API",
-        "version": "1.0.0",
+        "version": "2.0.0",
+        "problems_covered": 7,
         "timestamp": datetime.now(timezone.utc).isoformat(),
     }
 
 
-# ─── FROZEN API ENDPOINTS ─────────────────────────────────
-# These are frozen at Hour 15. Do NOT change paths or response shapes.
-# ES (Eshan Shukla) consumes these in /frontend/src/api/client.js
-
+# ─── FROZEN API ENDPOINTS (v2 schema) ─────────────────────
 
 @app.get("/api/scans/{repo_id}")
 async def get_repo_scans(repo_id: str):
     """
     Get all scans for a repository.
-    
-    Response: [
-        {
-            pr_number: int,
-            vibe_risk_score: int,          // 0-100
-            timestamp: str,                // ISO 8601
-            findings_summary: {
-                critical: int,
-                high: int,
-                medium: int,
-                low: int
-            },
-            s3_report_key: str
-        }
-    ]
+    v2: includes ai_confidence_score and code_reliability_score
     """
     try:
         table = _get_dynamodb_table()
-
         response = table.query(
             KeyConditionExpression=boto3.dynamodb.conditions.Key("repo_id").eq(repo_id),
-            ScanIndexForward=False,  # Most recent first
+            ScanIndexForward=False,
             Limit=50,
         )
-
         items = response.get("Items", [])
 
         scans = []
@@ -116,6 +86,8 @@ async def get_repo_scans(repo_id: str):
             scans.append({
                 "pr_number": int(item.get("pr_number", 0)),
                 "vibe_risk_score": int(item.get("vibe_risk_score", 0)),
+                "ai_confidence_score": int(item.get("ai_confidence_score", 0)),
+                "code_reliability_score": item.get("code_reliability_score", "LOW"),
                 "timestamp": item.get("timestamp", ""),
                 "findings_summary": {
                     "critical": int(item.get("findings_summary", {}).get("critical", 0)),
@@ -137,46 +109,34 @@ async def get_repo_scans(repo_id: str):
 async def get_scan_detail(repo_id: str, pr_number: int):
     """
     Get detailed scan results for a specific PR.
-    
-    Response: {
-        pr_number: int,
-        vibe_risk_score: int,
-        timestamp: str,
-        findings: [
-            {
-                type: str,       // 'SECRET' | 'PACKAGE' | 'SQL' | 'PROMPT' | 'IAC' | 'GIT'
-                severity: str,   // 'CRITICAL' | 'HIGH' | 'MEDIUM' | 'LOW'
-                file: str,
-                line: int,
-                description: str,
-                fix_code: str
-            }
-        ],
-        auto_fix_pr_url: str | null
-    }
+    v2 schema: includes exploit_payload, root_cause, compliance, reputation, cost
     """
     try:
-        # Fetch the full report from S3
         s3 = _get_s3_client()
-
-        # List objects with the prefix to find the latest scan for this PR
         prefix = f"reports/{repo_id}/{pr_number}/"
         response = s3.list_objects_v2(Bucket=BUCKET_NAME, Prefix=prefix)
 
         if "Contents" not in response or not response["Contents"]:
             raise HTTPException(status_code=404, detail=f"No scan found for PR #{pr_number}")
 
-        # Get the most recent report
         latest_key = sorted(response["Contents"], key=lambda x: x["LastModified"], reverse=True)[0]["Key"]
-
         obj = s3.get_object(Bucket=BUCKET_NAME, Key=latest_key)
         report = json.loads(obj["Body"].read().decode("utf-8"))
 
-        # Return in the frozen schema format
+        # Build v2 response
         return {
             "pr_number": report.get("pr_number", pr_number),
             "vibe_risk_score": report.get("vibe_risk_score", 0),
+            "ai_confidence_score": report.get("ai_confidence_score", 0),
+            "code_reliability_score": report.get("code_reliability_score", "LOW"),
             "timestamp": report.get("timestamp", ""),
+
+            # Cost routing
+            "bedrock_cost_usd": report.get("cost_summary", {}).get("bedrock_cost_usd", 0),
+            "bedrock_cost_without_routing_usd": report.get("cost_summary", {}).get("bedrock_cost_without_routing_usd", 0),
+            "cost_savings_pct": report.get("cost_summary", {}).get("cost_savings_pct", 0),
+
+            # Findings with v2 fields
             "findings": [
                 {
                     "type": f.get("type", "UNKNOWN"),
@@ -185,10 +145,39 @@ async def get_scan_detail(repo_id: str, pr_number: int):
                     "line": f.get("line", 0),
                     "description": f.get("description", ""),
                     "fix_code": f.get("fix_code", ""),
+
+                    # v2: Exploit payload (CRITICAL only)
+                    "exploit_payload": f.get("exploit_payload"),
+
+                    # v2: Root cause
+                    "root_cause": f.get("root_cause"),
+
+                    # v2: Compliance
+                    "compliance_violations": f.get("compliance_violations", []),
+                    "audit_impact": f.get("audit_impact", ""),
+
+                    # v2: Reputation (PACKAGE only)
+                    "reputation": f.get("reputation"),
+
+                    # v2: WAF + cost (IAC only, from MDA)
+                    "waf_pillar": f.get("waf_pillar"),
+                    "cost_impact": f.get("cost_impact"),
                 }
                 for f in report.get("findings", [])
             ],
+
+            # Pipeline findings (separate array, from MDA)
+            "pipeline_findings": report.get("pipeline_findings", []),
+
             "auto_fix_pr_url": report.get("auto_fix_pr_url"),
+
+            # v2: Compliance summary
+            "compliance_summary": report.get("compliance_summary", {
+                "owasp_violations": [],
+                "soc2_violations": [],
+                "cis_violations": [],
+                "audit_ready": True,
+            }),
         }
 
     except HTTPException:
@@ -198,16 +187,11 @@ async def get_scan_detail(repo_id: str, pr_number: int):
         raise HTTPException(status_code=500, detail=f"Failed to fetch scan detail: {str(e)}")
 
 
-# ─── Webhook Endpoint (for local development) ─────────────
+# ─── Webhook (local dev) ──────────────────────────────────
 
 @app.post("/webhook")
 async def receive_webhook(request: Request):
-    """
-    Receive GitHub webhook events for local development.
-    In production, API Gateway invokes Lambda directly.
-    """
     body = await request.json()
-
     action = body.get("action", "")
     if action not in ("opened", "synchronize", "reopened"):
         return {"status": "ignored", "reason": f"Unsupported action: {action}"}
@@ -227,7 +211,6 @@ async def receive_webhook(request: Request):
         "timestamp": datetime.now(timezone.utc).isoformat(),
     }
 
-    # Run the scan pipeline asynchronously
     from backend.orchestrator import ScanOrchestrator
     orchestrator = ScanOrchestrator()
     result = await orchestrator.run_full_pipeline(pr_meta)
@@ -236,10 +219,9 @@ async def receive_webhook(request: Request):
         "status": "completed",
         "vibe_risk_score": result.get("vibe_risk_score", 0),
         "total_findings": result.get("total_findings", 0),
+        "cost_savings_pct": result.get("cost_savings_pct", 0),
     }
 
-
-# ─── Local Development Entry Point ────────────────────────
 
 if __name__ == "__main__":
     import uvicorn

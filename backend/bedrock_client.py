@@ -1,11 +1,12 @@
 """
-bedrock_client.py — Amazon Bedrock AI Integration
+bedrock_client.py — Amazon Bedrock AI Integration (v2 — with Router)
 Owner: Nikhil Virdi (NV)
 
-Wraps Amazon Bedrock (Claude Sonnet 4) for:
-1. Fix code generation per finding type
-2. LLM anti-pattern analysis (used by MDA's llm_antipattern.py)
-3. Natural language finding descriptions
+Now integrates with router.py for intelligent model selection:
+  - Simple tasks → Claude Haiku (10x cheaper, 3x faster)
+  - Complex tasks → Claude Sonnet 4 (higher accuracy)
+
+Tracks per-invocation costs via CostTracker.
 """
 
 import os
@@ -13,51 +14,37 @@ import json
 import logging
 import boto3
 
+from backend.router import PromptRouter
+
 logger = logging.getLogger(__name__)
 
 
 class BedrockClient:
-    """Wrapper around Amazon Bedrock for AI-powered security analysis."""
+    """Wrapper around Amazon Bedrock with intelligent routing."""
 
-    def __init__(self):
+    def __init__(self, router: PromptRouter | None = None):
         self.region = os.getenv("AWS_REGION", "ap-south-1")
-        self.model_id = os.getenv(
-            "BEDROCK_MODEL_ID",
-            "anthropic.claude-sonnet-4-20250514"
-        )
+        self.default_model_id = os.getenv("BEDROCK_MODEL_ID", "claude-sonnet-4-20250514")
+        self.router = router or PromptRouter()
         self.client = boto3.client(
             "bedrock-runtime",
             region_name=self.region,
         )
 
-    async def generate_fix(self, finding: dict, file_content: str = "") -> str:
-        """
-        Generate a fix patch for a specific finding using Claude.
-        
-        Args:
-            finding: Dict with type, severity, file, line, description
-            file_content: Full content of the vulnerable file (for context)
-            
-        Returns:
-            String containing the fixed code snippet.
-        """
-        finding_type = finding.get("type", "UNKNOWN")
+    async def generate_fix(self, finding: dict, file_content: str = "", scan_type: str = "fix_generation") -> str:
+        """Generate a fix patch for a specific finding using Claude."""
         prompt = self._build_fix_prompt(finding, file_content)
 
         try:
-            response = self._invoke_model(prompt)
+            model_id = self.router.get_model(scan_type)
+            response = self._invoke_model(prompt, model_id=model_id, scan_type=scan_type)
             return response.strip()
         except Exception as e:
-            logger.error("Bedrock fix generation failed for %s: %s", finding_type, e)
+            logger.error("Bedrock fix generation failed for %s: %s", finding.get("type"), e)
             return finding.get("fix_code", "// Fix generation failed. Manual review required.")
 
     async def analyze_antipatterns(self, file_content: str, filename: str) -> list[dict]:
-        """
-        Analyze a file for LLM anti-patterns using Bedrock.
-        Called by MDA's llm_antipattern.py scanner.
-        
-        Returns list of finding dicts.
-        """
+        """Analyze a file for LLM anti-patterns using Bedrock."""
         prompt = f"""You are an expert security engineer. Analyze the following AI-generated code file for common LLM anti-patterns and security issues.
 
 File: {filename}
@@ -69,33 +56,30 @@ File: {filename}
 Check for these specific anti-patterns that LLMs consistently generate:
 1. CORS wildcard configuration (Access-Control-Allow-Origin: *)
 2. Missing authentication middleware on API routes
-3. Missing rate limiting on public endpoints 
+3. Missing rate limiting on public endpoints
 4. Exposed debug/development routes in production
 5. Unvalidated file upload handlers
-6. Hardcoded CORS origins that should be environment variables
-7. Missing input validation on request bodies
-8. Overly permissive error messages exposing internals
+6. Missing input validation on request bodies
+7. Overly permissive error messages exposing internals
 
 For each issue found, return a JSON array with objects containing:
 - "type": "LLM_ANTIPATTERN"
 - "severity": "HIGH" or "MEDIUM"
 - "line": approximate line number
-- "description": clear explanation of the vulnerability
-- "fix_code": the corrected code snippet
+- "description": clear explanation
+- "fix_code": corrected code snippet
 
 Return ONLY the JSON array. If no issues found, return [].
 """
 
         try:
-            response = self._invoke_model(prompt)
-            # Parse Bedrock's response as JSON
-            # Strip any markdown code fences
+            model_id = self.router.get_model("llm_antipattern")
+            response = self._invoke_model(prompt, model_id=model_id, scan_type="llm_antipattern")
             cleaned = response.strip()
             if cleaned.startswith("```"):
                 cleaned = "\n".join(cleaned.split("\n")[1:-1])
-            
+
             findings = json.loads(cleaned)
-            # Add filename to each finding
             for f in findings:
                 f["file"] = filename
             return findings
@@ -120,7 +104,6 @@ Description: {description}
 """
 
         if file_content:
-            # Include surrounding context (limit to avoid token overflow)
             lines = file_content.split("\n")
             start = max(0, line - 10)
             end = min(len(lines), line + 10)
@@ -128,13 +111,14 @@ Description: {description}
             base_prompt += f"\nCode context:\n```\n{context}\n```\n"
 
         type_specific = {
-            "SECRET": "Replace the hardcoded credential with an environment variable lookup. Use os.getenv() for Python or process.env for JavaScript.",
-            "PACKAGE": "Remove the hallucinated package and suggest the correct real package name if one exists.",
-            "SQL": "Convert the string-concatenated query to a parameterized/prepared statement. Preserve the query logic.",
-            "PROMPT": "Add input sanitization before the user input reaches the LLM. Create a sanitize_for_llm() wrapper function.",
-            "IAC": "Apply least-privilege principles. Replace wildcard permissions with specific required actions. Make S3 buckets private.",
-            "GIT": "Provide the git filter-repo command to purge the secret from history, and instructions to rotate the credential.",
-            "LLM_ANTIPATTERN": "Fix the anti-pattern by applying security best practices: add auth middleware, restrict CORS, add rate limiting.",
+            "SECRET": "Replace the hardcoded credential with an environment variable lookup.",
+            "PACKAGE": "Remove the hallucinated package and suggest the correct real package.",
+            "SQL": "Convert to a parameterized/prepared statement. Preserve query logic.",
+            "PROMPT": "Add input sanitization before user input reaches the LLM.",
+            "IAC": "Apply least-privilege. Replace wildcard permissions with specific actions.",
+            "GIT": "Provide git filter-repo command to purge from history + rotation steps.",
+            "LLM_ANTIPATTERN": "Fix the anti-pattern: add auth, restrict CORS, add rate limiting.",
+            "PIPELINE": "Pin actions to SHAs, restrict permissions, add timeout-minutes.",
         }
 
         base_prompt += f"\nSpecific instruction: {type_specific.get(finding_type, 'Generate a secure fix.')}\n"
@@ -142,12 +126,14 @@ Description: {description}
 
         return base_prompt
 
-    def _invoke_model(self, prompt: str) -> str:
-        """Invoke the Bedrock model and return the response text."""
+    def _invoke_model(self, prompt: str, model_id: str | None = None, scan_type: str = "unknown") -> str:
+        """Invoke the Bedrock model and return the response text. Tracks costs via router."""
+        target_model = model_id or self.default_model_id
+
         payload = {
             "anthropic_version": "bedrock-2023-05-31",
             "max_tokens": 1024,
-            "temperature": 0.1,  # Low temperature for deterministic fixes
+            "temperature": 0.1,
             "messages": [
                 {
                     "role": "user",
@@ -157,11 +143,19 @@ Description: {description}
         }
 
         response = self.client.invoke_model(
-            modelId=self.model_id,
+            modelId=target_model,
             contentType="application/json",
             accept="application/json",
             body=json.dumps(payload),
         )
 
         response_body = json.loads(response["body"].read())
-        return response_body.get("content", [{}])[0].get("text", "")
+        text = response_body.get("content", [{}])[0].get("text", "")
+
+        # Track cost via router
+        usage = response_body.get("usage", {})
+        input_tokens = usage.get("input_tokens", len(prompt) // 4)
+        output_tokens = usage.get("output_tokens", len(text) // 4)
+        self.router.track_cost(scan_type, input_tokens, output_tokens)
+
+        return text
