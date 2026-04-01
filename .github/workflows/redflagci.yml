@@ -1,0 +1,16 @@
+name: RedFlag CI Security Scan
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+jobs:
+  notify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Send PR workflow details to RedFlag CI Webhook
+        run: |
+          curl -X POST -H "Content-Type: application/json" -d '{
+            "repo_full_name": "${{ github.repository }}",
+            "pr_number": ${{ github.event.pull_request.number }}
+          }' ${{ secrets.REDFLAG_API_URL }}/webhook

@@ -1,0 +1,375 @@
+{
+ "Resources": {
+  "ScannerFunctionServiceRole2A05BEFD": {
+   "Type": "AWS::IAM::Role",
+   "Properties": {
+    "AssumeRolePolicyDocument": {
+     "Statement": [
+      {
+       "Action": "sts:AssumeRole",
+       "Effect": "Allow",
+       "Principal": {
+        "Service": "lambda.amazonaws.com"
+       }
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "ManagedPolicyArns": [
+     {
+      "Fn::Join": [
+       "",
+       [
+        "arn:",
+        {
+         "Ref": "AWS::Partition"
+        },
+        ":iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+       ]
+      ]
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "RedFlagCIStack/ScannerFunction/ServiceRole/Resource"
+   }
+  },
+  "ScannerFunction1B1642AE": {
+   "Type": "AWS::Lambda::Function",
+   "Properties": {
+    "Code": {
+     "S3Bucket": "cdk-hnb659fds-assets-184574354000-ap-south-1",
+     "S3Key": "ac13ccd97d1f256fb4abe9040e3f57fcdb1deeefdf8353bd0c5024911d52fffd.zip"
+    },
+    "FunctionName": "redflagci-scanner",
+    "Handler": "handler.lambda_handler",
+    "MemorySize": 1024,
+    "Role": {
+     "Fn::GetAtt": [
+      "ScannerFunctionServiceRole2A05BEFD",
+      "Arn"
+     ]
+    },
+    "Runtime": "python3.12",
+    "Timeout": 300
+   },
+   "DependsOn": [
+    "ScannerFunctionServiceRole2A05BEFD"
+   ],
+   "Metadata": {
+    "aws:cdk:path": "RedFlagCIStack/ScannerFunction/Resource",
+    "aws:asset:path": "asset.ac13ccd97d1f256fb4abe9040e3f57fcdb1deeefdf8353bd0c5024911d52fffd",
+    "aws:asset:is-bundled": false,
+    "aws:asset:property": "Code"
+   }
+  },
+  "WebhookApi28122C53": {
+   "Type": "AWS::ApiGatewayV2::Api",
+   "Properties": {
+    "Name": "redflagci-webhook-api",
+    "ProtocolType": "HTTP"
+   },
+   "Metadata": {
+    "aws:cdk:path": "RedFlagCIStack/WebhookApi/Resource"
+   }
+  },
+  "WebhookApiDefaultStageC0BC9CA5": {
+   "Type": "AWS::ApiGatewayV2::Stage",
+   "Properties": {
+    "ApiId": {
+     "Ref": "WebhookApi28122C53"
+    },
+    "AutoDeploy": true,
+    "StageName": "$default"
+   },
+   "Metadata": {
+    "aws:cdk:path": "RedFlagCIStack/WebhookApi/DefaultStage/Resource"
+   }
+  },
+  "WebhookApiPOSTwebhookWebhookIntegrationDBC85620": {
+   "Type": "AWS::ApiGatewayV2::Integration",
+   "Properties": {
+    "ApiId": {
+     "Ref": "WebhookApi28122C53"
+    },
+    "IntegrationType": "AWS_PROXY",
+    "IntegrationUri": {
+     "Fn::GetAtt": [
+      "ScannerFunction1B1642AE",
+      "Arn"
+     ]
+    },
+    "PayloadFormatVersion": "2.0"
+   },
+   "Metadata": {
+    "aws:cdk:path": "RedFlagCIStack/WebhookApi/POST--webhook/WebhookIntegration/Resource"
+   }
+  },
+  "WebhookApiPOSTwebhookWebhookIntegrationPermissionBC75BE57": {
+   "Type": "AWS::Lambda::Permission",
+   "Properties": {
+    "Action": "lambda:InvokeFunction",
+    "FunctionName": {
+     "Fn::GetAtt": [
+      "ScannerFunction1B1642AE",
+      "Arn"
+     ]
+    },
+    "Principal": "apigateway.amazonaws.com",
+    "SourceArn": {
+     "Fn::Join": [
+      "",
+      [
+       "arn:",
+       {
+        "Ref": "AWS::Partition"
+       },
+       ":execute-api:ap-south-1:184574354000:",
+       {
+        "Ref": "WebhookApi28122C53"
+       },
+       "/*/*/webhook"
+      ]
+     ]
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "RedFlagCIStack/WebhookApi/POST--webhook/WebhookIntegration-Permission"
+   }
+  },
+  "WebhookApiPOSTwebhook7CDA2317": {
+   "Type": "AWS::ApiGatewayV2::Route",
+   "Properties": {
+    "ApiId": {
+     "Ref": "WebhookApi28122C53"
+    },
+    "AuthorizationType": "NONE",
+    "RouteKey": "POST /webhook",
+    "Target": {
+     "Fn::Join": [
+      "",
+      [
+       "integrations/",
+       {
+        "Ref": "WebhookApiPOSTwebhookWebhookIntegrationDBC85620"
+       }
+      ]
+     ]
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "RedFlagCIStack/WebhookApi/POST--webhook/Resource"
+   }
+  },
+  "ScansTableF3C3406E": {
+   "Type": "AWS::DynamoDB::Table",
+   "Properties": {
+    "AttributeDefinitions": [
+     {
+      "AttributeName": "repo_id",
+      "AttributeType": "S"
+     },
+     {
+      "AttributeName": "pr_number_timestamp",
+      "AttributeType": "S"
+     }
+    ],
+    "BillingMode": "PAY_PER_REQUEST",
+    "GlobalSecondaryIndexes": [
+     {
+      "IndexName": "RepoIdIndex",
+      "KeySchema": [
+       {
+        "AttributeName": "repo_id",
+        "KeyType": "HASH"
+       }
+      ],
+      "Projection": {
+       "ProjectionType": "ALL"
+      }
+     }
+    ],
+    "KeySchema": [
+     {
+      "AttributeName": "repo_id",
+      "KeyType": "HASH"
+     },
+     {
+      "AttributeName": "pr_number_timestamp",
+      "KeyType": "RANGE"
+     }
+    ],
+    "TableName": "redflagci-scans",
+    "TimeToLiveSpecification": {
+     "AttributeName": "ttl",
+     "Enabled": true
+    }
+   },
+   "UpdateReplacePolicy": "Delete",
+   "DeletionPolicy": "Delete",
+   "Metadata": {
+    "aws:cdk:path": "RedFlagCIStack/ScansTable/Resource"
+   }
+  },
+  "ReportsBucket4E7C5994": {
+   "Type": "AWS::S3::Bucket",
+   "Properties": {
+    "BucketName": "redflagci-reports-184574354000",
+    "LifecycleConfiguration": {
+     "Rules": [
+      {
+       "ExpirationInDays": 90,
+       "Status": "Enabled"
+      }
+     ]
+    },
+    "VersioningConfiguration": {
+     "Status": "Enabled"
+    }
+   },
+   "UpdateReplacePolicy": "Retain",
+   "DeletionPolicy": "Retain",
+   "Metadata": {
+    "aws:cdk:path": "RedFlagCIStack/ReportsBucket/Resource"
+   }
+  },
+  "GitHubAppSecret545D19D5": {
+   "Type": "AWS::SecretsManager::Secret",
+   "Properties": {
+    "GenerateSecretString": {
+     "GenerateStringKey": "GITHUB_APP_ID",
+     "SecretStringTemplate": "{}"
+    },
+    "Name": "redflag/github-app"
+   },
+   "UpdateReplacePolicy": "Delete",
+   "DeletionPolicy": "Delete",
+   "Metadata": {
+    "aws:cdk:path": "RedFlagCIStack/GitHubAppSecret/Resource"
+   }
+  },
+  "CriticalAlertsTopicF16F2E77": {
+   "Type": "AWS::SNS::Topic",
+   "Properties": {
+    "TopicName": "redflag-critical-alerts"
+   },
+   "Metadata": {
+    "aws:cdk:path": "RedFlagCIStack/CriticalAlertsTopic/Resource"
+   }
+  },
+  "ScannerLambdaLogGroupB58E75E7": {
+   "Type": "AWS::Logs::LogGroup",
+   "Properties": {
+    "LogGroupName": {
+     "Fn::Join": [
+      "",
+      [
+       "/aws/lambda/",
+       {
+        "Ref": "ScannerFunction1B1642AE"
+       }
+      ]
+     ]
+    },
+    "RetentionInDays": 30
+   },
+   "UpdateReplacePolicy": "Delete",
+   "DeletionPolicy": "Delete",
+   "Metadata": {
+    "aws:cdk:path": "RedFlagCIStack/ScannerLambdaLogGroup/Resource"
+   }
+  },
+  "CDKMetadata": {
+   "Type": "AWS::CDK::Metadata",
+   "Properties": {
+    "Analytics": "v2:deflate64:H4sIAAAAAAAA/12PzWoDMQyEnyV3RW02pdBjUugPFBo2uQet13Hd7NqLJTcE43cv9hIoPc0nacyMG2weHvF+QRdeqv68HGyHaS+kzkAXPqaBxq4nTC/RKbHewfPJ/eWdDqNltt5lsDRiav2gy6FoBl4fiVkL46YI8BrTNqqzli2xhhmLfaYMNFlDoi90/WkwvYlMm8kWQ5Ey7oVMDZihrFofZaZ3J9oEupX7N1Zfhv7qaPR9h+lA3Vy2QgbWKmjhkRwZHTDt61zDKmVgx5gOfrKqPiuQYfCGMX148xp8nMrhxjlD/Xfpap2BVrOPQdXMzyhTlAy7q3x5d7fG1QqfFt9s7TJEJ3bU2M76C8bQe7GkAQAA"
+   },
+   "Metadata": {
+    "aws:cdk:path": "RedFlagCIStack/CDKMetadata/Default"
+   }
+  }
+ },
+ "Outputs": {
+  "ApiGatewayUrl": {
+   "Description": "API_GATEWAY_URL",
+   "Value": {
+    "Fn::Join": [
+     "",
+     [
+      "https://",
+      {
+       "Ref": "WebhookApi28122C53"
+      },
+      ".execute-api.ap-south-1.",
+      {
+       "Ref": "AWS::URLSuffix"
+      },
+      "/"
+     ]
+    ]
+   }
+  },
+  "LambdaFunctionName": {
+   "Description": "LAMBDA_FUNCTION_NAME",
+   "Value": {
+    "Ref": "ScannerFunction1B1642AE"
+   }
+  },
+  "DynamoDbTableName": {
+   "Description": "DYNAMODB_TABLE_NAME",
+   "Value": {
+    "Ref": "ScansTableF3C3406E"
+   }
+  },
+  "S3BucketName": {
+   "Description": "S3_BUCKET_NAME",
+   "Value": {
+    "Ref": "ReportsBucket4E7C5994"
+   }
+  },
+  "SnsTopicArn": {
+   "Description": "SNS_TOPIC_ARN",
+   "Value": {
+    "Ref": "CriticalAlertsTopicF16F2E77"
+   }
+  },
+  "AwsRegion": {
+   "Description": "AWS_REGION",
+   "Value": "ap-south-1"
+  }
+ },
+ "Parameters": {
+  "BootstrapVersion": {
+   "Type": "AWS::SSM::Parameter::Value<String>",
+   "Default": "/cdk-bootstrap/hnb659fds/version",
+   "Description": "Version of the CDK Bootstrap resources in this environment, automatically retrieved from SSM Parameter Store. [cdk:skip]"
+  }
+ },
+ "Rules": {
+  "CheckBootstrapVersion": {
+   "Assertions": [
+    {
+     "Assert": {
+      "Fn::Not": [
+       {
+        "Fn::Contains": [
+         [
+          "1",
+          "2",
+          "3",
+          "4",
+          "5"
+         ],
+         {
+          "Ref": "BootstrapVersion"
+         }
+        ]
+       }
+      ]
+     },
+     "AssertDescription": "CDK bootstrap stack version 6 required. Please run 'cdk bootstrap' with a recent version of the CDK CLI."
+    }
+   ]
+  }
+ }
+}

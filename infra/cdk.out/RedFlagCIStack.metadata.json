@@ -1,0 +1,136 @@
+{
+  "/RedFlagCIStack/ScansTable": [
+    {
+      "type": "aws:cdk:hasPhysicalName",
+      "data": {
+        "Ref": "ScansTableF3C3406E"
+      }
+    }
+  ],
+  "/RedFlagCIStack/ApiGatewayUrl": [
+    {
+      "type": "aws:cdk:logicalId",
+      "data": "ApiGatewayUrl"
+    }
+  ],
+  "/RedFlagCIStack/LambdaFunctionName": [
+    {
+      "type": "aws:cdk:logicalId",
+      "data": "LambdaFunctionName"
+    }
+  ],
+  "/RedFlagCIStack/DynamoDbTableName": [
+    {
+      "type": "aws:cdk:logicalId",
+      "data": "DynamoDbTableName"
+    }
+  ],
+  "/RedFlagCIStack/S3BucketName": [
+    {
+      "type": "aws:cdk:logicalId",
+      "data": "S3BucketName"
+    }
+  ],
+  "/RedFlagCIStack/SnsTopicArn": [
+    {
+      "type": "aws:cdk:logicalId",
+      "data": "SnsTopicArn"
+    }
+  ],
+  "/RedFlagCIStack/AwsRegion": [
+    {
+      "type": "aws:cdk:logicalId",
+      "data": "AwsRegion"
+    }
+  ],
+  "/RedFlagCIStack/BootstrapVersion": [
+    {
+      "type": "aws:cdk:logicalId",
+      "data": "BootstrapVersion"
+    }
+  ],
+  "/RedFlagCIStack/CheckBootstrapVersion": [
+    {
+      "type": "aws:cdk:logicalId",
+      "data": "CheckBootstrapVersion"
+    }
+  ],
+  "/RedFlagCIStack/ScannerFunction/Resource": [
+    {
+      "type": "aws:cdk:logicalId",
+      "data": "ScannerFunction1B1642AE"
+    }
+  ],
+  "/RedFlagCIStack/WebhookApi/Resource": [
+    {
+      "type": "aws:cdk:logicalId",
+      "data": "WebhookApi28122C53"
+    }
+  ],
+  "/RedFlagCIStack/ScansTable/Resource": [
+    {
+      "type": "aws:cdk:logicalId",
+      "data": "ScansTableF3C3406E"
+    }
+  ],
+  "/RedFlagCIStack/ReportsBucket/Resource": [
+    {
+      "type": "aws:cdk:logicalId",
+      "data": "ReportsBucket4E7C5994"
+    }
+  ],
+  "/RedFlagCIStack/GitHubAppSecret/Resource": [
+    {
+      "type": "aws:cdk:logicalId",
+      "data": "GitHubAppSecret545D19D5"
+    }
+  ],
+  "/RedFlagCIStack/CriticalAlertsTopic/Resource": [
+    {
+      "type": "aws:cdk:logicalId",
+      "data": "CriticalAlertsTopicF16F2E77"
+    }
+  ],
+  "/RedFlagCIStack/ScannerLambdaLogGroup/Resource": [
+    {
+      "type": "aws:cdk:logicalId",
+      "data": "ScannerLambdaLogGroupB58E75E7"
+    }
+  ],
+  "/RedFlagCIStack/CDKMetadata/Default": [
+    {
+      "type": "aws:cdk:logicalId",
+      "data": "CDKMetadata"
+    }
+  ],
+  "/RedFlagCIStack/ScannerFunction/ServiceRole/Resource": [
+    {
+      "type": "aws:cdk:logicalId",
+      "data": "ScannerFunctionServiceRole2A05BEFD"
+    }
+  ],
+  "/RedFlagCIStack/WebhookApi/DefaultStage/Resource": [
+    {
+      "type": "aws:cdk:logicalId",
+      "data": "WebhookApiDefaultStageC0BC9CA5"
+    }
+  ],
+  "/RedFlagCIStack/WebhookApi/POST--webhook/WebhookIntegration-Permission": [
+    {
+      "type": "aws:cdk:logicalId",
+      "data": "WebhookApiPOSTwebhookWebhookIntegrationPermissionBC75BE57"
+    }
+  ],
+  "/RedFlagCIStack/WebhookApi/POST--webhook/Resource": [
+    {
+      "type": "aws:cdk:logicalId",
+      "data": "WebhookApiPOSTwebhook7CDA2317"
+    }
+  ],
+  "/RedFlagCIStack/WebhookApi/POST--webhook/WebhookIntegration/Resource": [
+    {
+      "type": "aws:cdk:logicalId",
+      "data": "WebhookApiPOSTwebhookWebhookIntegrationDBC85620"
+    }
+  ]
+}

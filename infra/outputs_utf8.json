@@ -1,0 +1,32 @@
+[
+  {
+    "OutputKey": "ApiGatewayUrl",
+    "OutputValue": "https://k5au64ad1h.execute-api.ap-south-1.amazonaws.com/",
+    "Description": "API_GATEWAY_URL"
+  },
+  {
+    "OutputKey": "AwsRegion",
+    "OutputValue": "ap-south-1",
+    "Description": "AWS_REGION"
+  },
+  {
+    "OutputKey": "DynamoDbTableName",
+    "OutputValue": "redflagci-scans",
+    "Description": "DYNAMODB_TABLE_NAME"
+  },
+  {
+    "OutputKey": "LambdaFunctionName",
+    "OutputValue": "redflagci-scanner",
+    "Description": "LAMBDA_FUNCTION_NAME"
+  },
+  {
+    "OutputKey": "S3BucketName",
+    "OutputValue": "redflagci-reports-184574354000",
+    "Description": "S3_BUCKET_NAME"
+  },
+  {
+    "OutputKey": "SnsTopicArn",
+    "OutputValue": "arn:aws:sns:ap-south-1:184574354000:redflag-critical-alerts",
+    "Description": "SNS_TOPIC_ARN"
+  }
+]

@@ -1,0 +1,36 @@
+{
+  "version": "53.0.0",
+  "files": {
+    "ac13ccd97d1f256fb4abe9040e3f57fcdb1deeefdf8353bd0c5024911d52fffd": {
+      "displayName": "ScannerFunction/Code",
+      "source": {
+        "path": "asset.ac13ccd97d1f256fb4abe9040e3f57fcdb1deeefdf8353bd0c5024911d52fffd",
+        "packaging": "zip"
+      },
+      "destinations": {
+        "184574354000-ap-south-1-db465cb8": {
+          "bucketName": "cdk-hnb659fds-assets-184574354000-ap-south-1",
+          "objectKey": "ac13ccd97d1f256fb4abe9040e3f57fcdb1deeefdf8353bd0c5024911d52fffd.zip",
+          "region": "ap-south-1",
+          "assumeRoleArn": "arn:${AWS::Partition}:iam::184574354000:role/cdk-hnb659fds-file-publishing-role-184574354000-ap-south-1"
+        }
+      }
+    },
+    "dcf082632706919708775b9db1961905328e56572130527fc9b61eba77e17d1c": {
+      "displayName": "RedFlagCIStack Template",
+      "source": {
+        "path": "RedFlagCIStack.template.json",
+        "packaging": "file"
+      },
+      "destinations": {
+        "184574354000-ap-south-1-cfc3986d": {
+          "bucketName": "cdk-hnb659fds-assets-184574354000-ap-south-1",
+          "objectKey": "dcf082632706919708775b9db1961905328e56572130527fc9b61eba77e17d1c.json",
+          "region": "ap-south-1",
+          "assumeRoleArn": "arn:${AWS::Partition}:iam::184574354000:role/cdk-hnb659fds-file-publishing-role-184574354000-ap-south-1"
+        }
+      }
+    }
+  },
+  "dockerImages": {}
+}
