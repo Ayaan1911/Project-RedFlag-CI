@@ -1,8 +1,7 @@
-import { MOCK_SCAN_DETAIL } from '../../api/mockData'
 import { getScoreColor, getRiskLabel } from '../../utils/scoring'
 
-export default function ScanSummaryBar() {
-  const scan = MOCK_SCAN_DETAIL
+export default function ScanSummaryBar({ scan }) {
+  if (!scan) return null;
   const cs = scan.compliance_summary
 
   return (

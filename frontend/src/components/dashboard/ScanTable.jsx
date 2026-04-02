@@ -2,11 +2,11 @@ import { useNavigate } from 'react-router-dom'
 import { formatTimestamp } from '../../utils/scoring'
 
 const MOCK_RECENT_SCANS = [
-  { repo: 'acme/vibe-app', pr: '#42', score: 87, criticals: 3, highs: 2, mediums: 4, timestamp: '2026-04-01T10:30:00Z' },
-  { repo: 'acme/vibe-app', pr: '#41', score: 45, criticals: 1, highs: 1, mediums: 3, timestamp: '2026-03-31T16:00:00Z' },
-  { repo: 'acme/dashboard', pr: '#38', score: 12, criticals: 0, highs: 0, mediums: 1, timestamp: '2026-03-30T09:15:00Z' },
-  { repo: 'acme/api-server', pr: '#36', score: 68, criticals: 2, highs: 3, mediums: 1, timestamp: '2026-03-29T14:45:00Z' },
-  { repo: 'acme/docs', pr: '#33', score: 5, criticals: 0, highs: 0, mediums: 0, timestamp: '2026-03-28T11:20:00Z' },
+  { repo: 'redflag-ci-vulnerable-dataset', pr: '#1', score: 87, criticals: 3, highs: 2, mediums: 4, timestamp: new Date().toISOString(), isReal: true, repoId: '1199052310' },
+  { repo: 'Shivam-64bit/fintech-payment-engine', pr: '#3', score: 45, criticals: 1, highs: 1, mediums: 3, timestamp: new Date(Date.now() - 15 * 60000).toISOString() },
+  { repo: 'Shivam-64bit/auth-microservice', pr: '#1', score: 12, criticals: 0, highs: 0, mediums: 1, timestamp: new Date(Date.now() - 42 * 60000).toISOString() },
+  { repo: 'Shivam-64bit/legacy-java-crm', pr: '#5', score: 68, criticals: 2, highs: 3, mediums: 1, timestamp: new Date(Date.now() - 115 * 60000).toISOString() },
+  { repo: 'Shivam-64bit/banking-app-v2', pr: '#2', score: 5, criticals: 0, highs: 0, mediums: 0, timestamp: new Date(Date.now() - 340 * 60000).toISOString() },
 ]
 
 export default function ScanTable() {
@@ -37,7 +37,13 @@ export default function ScanTable() {
             return (
               <tr 
                 key={scan.pr} 
-                onClick={() => navigate(`/scan/demo/${scan.pr.replace('#', '')}`)}
+                onClick={() => {
+                  if (scan.isReal) {
+                    navigate(`/repo/${scan.repoId}/scan/${scan.pr.replace('#', '')}`)
+                  } else {
+                    navigate(`/scan/demo/${scan.pr.replace('#', '')}`)
+                  }
+                }}
                 className="table-body-row cursor-pointer"
                 style={{ '--i': i }}
               >

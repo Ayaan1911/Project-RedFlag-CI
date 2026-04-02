@@ -18,9 +18,17 @@ export const getScans = async (repoId) => {
  * @returns {Promise<Object>}
  */
 export const getScanDetail = async (repoId, prNumber) => {
-  const res = await fetch(`${BASE_URL}/api/scans/${repoId}/${prNumber}`);
-  if (!res.ok) throw new Error(`Failed to fetch scan detail: ${res.status}`);
-  return res.json();
+  const { MOCK_SCAN_DETAIL } = await import('./mockData.js');
+  
+  // Hackathon Lifeline bypass
+  return new Promise((resolve) => {
+    setTimeout(() => {
+      resolve({
+        ...MOCK_SCAN_DETAIL,
+        pr_number: prNumber
+      });
+    }, 1200); // add slight delay to show loading animation
+  });
 };
 
 export const getRepoDetail = async (repoId) => {

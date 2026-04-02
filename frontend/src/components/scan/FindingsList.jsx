@@ -1,9 +1,7 @@
 import { useParams, useNavigate } from 'react-router-dom'
-import { MOCK_SCAN_DETAIL } from '../../api/mockData'
 import SeverityBadge from '../shared/SeverityBadge'
 
-export default function FindingsList({ onSelectFinding }) {
-  const findings = MOCK_SCAN_DETAIL.findings
+export default function FindingsList({ findings = [], onSelectFinding }) {
   const { repoId = 'demo', prNumber = '42' } = useParams()
   const navigate = useNavigate()
 

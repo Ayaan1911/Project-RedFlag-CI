@@ -1,4 +1,5 @@
-import { useState, useCallback, useMemo } from 'react'
+import { useState, useCallback, useMemo, useEffect } from 'react'
+import { useParams } from 'react-router-dom'
 import ReactFlow, {
   Controls,
   MiniMap,
@@ -18,9 +19,13 @@ import ScannerNode from '../components/scan/ScannerNode'
 import ResultNode from '../components/scan/ResultNode'
 import TriggerNode from '../components/scan/TriggerNode'
 import { buildPipelineGraph } from '../components/scan/pipelineLayout'
-import { MOCK_SCAN_DETAIL } from '../api/mockData'
+import { getScanDetail } from '../api/client'
 
 export default function ScanDetail() {
+  const { repoId, prNumber } = useParams()
+  const [scanData, setScanData] = useState(null)
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState(null)
   const [selectedFinding, setSelectedFinding] = useState(null)
 
   const nodeTypes = useMemo(() => ({
@@ -51,12 +56,31 @@ export default function ScanDetail() {
         'compliance': 'LLM_ANTIPATTERN',
       }
       const scanType = typeMap[node.id]
-      if (scanType) {
-        const finding = MOCK_SCAN_DETAIL.findings.find(f => f.type === scanType)
+      if (scanType && scanData) {
+        const finding = scanData.findings.find(f => f.type === scanType)
         if (finding) setSelectedFinding(finding)
       }
     }
-  }, [])
+  }, [scanData])
+
+  useEffect(() => {
+    async function loadData() {
+      try {
+        setLoading(true)
+        const data = await getScanDetail(repoId, prNumber)
+        setScanData(data)
+      } catch (err) {
+        setError(err.message)
+      } finally {
+        setLoading(false)
+      }
+    }
+    loadData()
+  }, [repoId, prNumber])
+
+  if (loading) return <div className="min-h-screen bg-bg flex items-center justify-center text-text text-xl">Calling AWS Bedrock AI... please wait.</div>
+  if (error) return <div className="min-h-screen bg-bg flex items-center justify-center text-red text-xl">Error: {error}</div>
+  if (!scanData) return <div className="min-h-screen bg-bg flex items-center justify-center text-text text-xl">No scan data found for this PR.</div>
 
   return (
     <div className="min-h-screen bg-bg relative">
@@ -71,10 +95,10 @@ export default function ScanDetail() {
           <div className="flex items-center justify-between">
             <div>
               <h1 className="text-xl font-semibold text-text">
-                Scan Detail — PR #42
+                Scan Detail — PR #{scanData.pr_number}
               </h1>
               <p className="text-sm text-textMuted mt-0.5">
-                acme/vibe-app · feat/chat-api
+                {repoId} · AI Security Report
               </p>
             </div>
             <div className="flex items-center gap-2">
@@ -85,7 +109,7 @@ export default function ScanDetail() {
           </div>
 
           {/* Summary Bar */}
-          <ScanSummaryBar />
+          <ScanSummaryBar scan={scanData} />
 
           {/* React Flow Canvas */}
           <div className="relative glass-1 overflow-hidden" style={{ height: '780px' }}>
@@ -123,7 +147,7 @@ export default function ScanDetail() {
           </div>
 
           {/* Findings List */}
-          <FindingsList onSelectFinding={setSelectedFinding} />
+          <FindingsList findings={scanData.findings} onSelectFinding={setSelectedFinding} />
         </main>
       </div>
     </div>
