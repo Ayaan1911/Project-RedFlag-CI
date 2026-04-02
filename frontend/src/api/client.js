@@ -18,8 +18,9 @@ export const getScans = async (repoId) => {
  * @returns {Promise<Object>}
  */
 export const getScanDetail = async (repoId, prNumber) => {
-  const { MOCK_SCAN_DETAIL } = await import('./mockData.js');
-  return MOCK_SCAN_DETAIL;
+  const res = await fetch(`${BASE_URL}/api/scans/${repoId}/${prNumber}`);
+  if (!res.ok) throw new Error(`Failed to fetch scan detail: ${res.status}`);
+  return res.json();
 };
 
 export const getRepoDetail = async (repoId) => {
@@ -47,14 +48,14 @@ export const getRepoDetail = async (repoId) => {
 };
 
 export const getRepoScans = async (repoId) => {
-  const { MOCK_SCAN_HISTORY } = await import('./repoMockData.js');
-  return MOCK_SCAN_HISTORY.map(row => ({
-    prNumber: row.pr,
-    vibeScore: row.score,
-    aiConf: 92, 
-    critical: row.criticals,
-    high: Math.floor(row.findings / 2),
-    medium: row.findings - row.criticals - Math.floor(row.findings / 2),
+  const scans = await getScans(repoId);
+  return scans.map(row => ({
+    prNumber: row.pr_number,
+    vibeScore: row.vibe_risk_score,
+    aiConf: row.ai_confidence_score, 
+    critical: row.findings_summary?.critical || 0,
+    high: row.findings_summary?.high || 0,
+    medium: row.findings_summary?.medium || 0,
     time: row.timestamp
   }));
 };
