@@ -1,10 +1,5 @@
 import { useEffect, useState } from 'react'
 import Navbar from '../components/shared/Navbar'
-import DashboardHero from '../components/dashboard/DashboardHero'
-import MetricCards from '../components/dashboard/MetricCards'
-import VibeDebtChart from '../components/dashboard/VibeDebtChart'
-import RouterSavingsCard from '../components/dashboard/RouterSavingsCard'
-import LiveActivityFeed from '../components/dashboard/LiveActivityFeed'
 import ScanTable from '../components/dashboard/ScanTable'
 import { getScans } from '../api/client'
 
@@ -15,20 +10,20 @@ export default function Dashboard() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
 
-  useEffect(() => {
-    async function loadScans() {
-      try {
-        setLoading(true)
-        setError(null)
-        const data = await getScans(DEFAULT_REPO_ID)
-        setScans(data)
-      } catch (err) {
-        setError(err.message)
-      } finally {
-        setLoading(false)
-      }
+  const loadScans = async () => {
+    try {
+      setLoading(true)
+      setError(null)
+      const data = await getScans(DEFAULT_REPO_ID)
+      setScans(data)
+    } catch (err) {
+      setError(err.message)
+    } finally {
+      setLoading(false)
     }
+  }
 
+  useEffect(() => {
     loadScans()
   }, [])
 
@@ -37,36 +32,29 @@ export default function Dashboard() {
   }
 
   if (error) {
-    return <div className="min-h-screen bg-[var(--bg-root)] text-red flex items-center justify-center">Error: {error}</div>
+    return (
+      <div className="min-h-screen bg-[var(--bg-root)] text-red flex flex-col items-center justify-center gap-4">
+        <div>Error: {error}</div>
+        <button onClick={loadScans} className="bg-surface border border-border px-4 py-2 rounded-lg hover:text-text transition-colors">Retry</button>
+      </div>
+    )
   }
 
   return (
-    <div className="min-h-screen relative p-8 pb-10 flex justify-center">
+    <div className="min-h-screen relative p-8 pb-10 flex justify-center bg-[var(--bg-root)] text-[var(--text-primary)] font-body">
       <div className="dashboard-shell w-full max-w-[1280px] flex flex-col overflow-hidden">
         <Navbar />
 
-        <main className="p-[28px_32px] flex flex-col gap-5">
-          <section style={{ '--i': 0 }}>
-            <DashboardHero />
-          </section>
-
-          <section className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3.5" style={{ '--i': 1 }}>
-            <MetricCards />
-          </section>
-
-          <section className="grid grid-cols-1 lg:grid-cols-11 gap-4 min-h-[380px]" style={{ '--i': 2 }}>
-            <div className="lg:col-span-5 h-full">
-              <VibeDebtChart />
-            </div>
-            <div className="lg:col-span-3 h-full">
-              <RouterSavingsCard />
-            </div>
-            <div className="lg:col-span-3 h-full">
-              <LiveActivityFeed />
+        <main className="p-[28px_32px] flex flex-col gap-8">
+          <section className="flex flex-col gap-2">
+            <h1 style={{ font: '700 32px var(--font-display)', color: '#F0F2FF', letterSpacing: '-0.5px' }}>RedFlag CI</h1>
+            <p style={{ font: '400 15px var(--font-body)', color: '#9AA0BC' }}>AI-powered security scanner for GitHub Pull Requests</p>
+            <div className="mt-2 text-[14px] text-[#4A5070] font-mono">
+              Total scans: <span className="text-[#6B8EFF] font-bold">{scans.length}</span>
             </div>
           </section>
 
-          <section style={{ '--i': 3 }}>
+          <section className="w-full">
             <ScanTable scans={scans} />
           </section>
         </main>

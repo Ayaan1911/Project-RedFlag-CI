@@ -1,10 +1,6 @@
 """
-github_client.py — PUBLIC INTERFACE (frozen at Hour 6, do not change signatures)
-Owner: Nikhil Virdi (NV)
-Consumer: Mohammad Ayaan (MDA) — auto_fix_pr.py
-
-Full implementation of GitHub API operations using httpx.
-Authenticates as a GitHub App using JWT + installation token.
+github_client.py — GitHub API client for RedFlag CI
+Handles authentication via GitHub App JWT or Personal Access Token (PAT).
 """
 
 import os
@@ -72,7 +68,22 @@ async def _get_installation_token(repo_full_name: str) -> str:
 
 
 async def _get_headers(repo_full_name: str) -> dict:
-    """Build authenticated headers for GitHub API calls."""
+    """Build authenticated headers for GitHub API calls.
+
+    Auth priority:
+    1. GITHUB_PAT — Personal Access Token (easy, for demos/dev)
+    2. GitHub App JWT + installation token (production)
+    """
+    # PAT fallback: bypass the entire App JWT flow
+    pat = os.getenv("GITHUB_PAT", "")
+    if pat:
+        return {
+            "Authorization": f"Bearer {pat}",
+            "Accept": "application/vnd.github+json",
+            "X-GitHub-Api-Version": "2022-11-28",
+        }
+
+    # Full GitHub App auth flow
     token = await _get_installation_token(repo_full_name)
     return {
         "Authorization": f"token {token}",

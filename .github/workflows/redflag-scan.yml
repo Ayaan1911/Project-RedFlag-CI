@@ -1,0 +1,37 @@
+name: RedFlag CI Security Scan
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+jobs:
+  security-scan:
+    name: Run RedFlag CI Scanner
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Trigger RedFlag CI Scan
+        env:
+          REDFLAG_API_URL: ${{ secrets.REDFLAG_API_URL }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          curl -X POST "$REDFLAG_API_URL/webhook" \
+            -H "Content-Type: application/json" \
+            -H "X-GitHub-Event: pull_request" \
+            -d '{
+              "action": "opened",
+              "pull_request": {
+                "number": ${{ github.event.pull_request.number }},
+                "head": {
+                  "sha": "${{ github.event.pull_request.head.sha }}"
+                }
+              },
+              "repository": {
+                "full_name": "${{ github.repository }}"
+              }
+            }'

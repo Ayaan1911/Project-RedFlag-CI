@@ -8,10 +8,10 @@ Coordinates the full RedFlag CI v2 scan pipeline:
 3. Execute all scan engines in parallel via asyncio.gather
 4. Enrich findings: exploit sim + root cause + compliance mapping
 5. Score findings (multi-dimensional)
-6. Generate AI fixes via Bedrock (routed)
+6. Generate AI fixes via Groq (routed)
 7. Post PR comment
-8. Store results in DynamoDB + S3
-9. Trigger SNS alerts if score > 80
+8. Store results in Supabase DB + Storage
+9. Send Discord alert if score > 80
 
 v2 additions: exploit simulation, root cause, compliance, reputation, router cost tracking
 """
@@ -23,7 +23,7 @@ import logging
 import time
 from datetime import datetime, timezone
 
-import boto3
+import httpx
 
 import backend.github_client as github_client
 from backend.auto_fix_pr import create_fix_pr
@@ -31,7 +31,7 @@ from backend.github_client import get_pr_diff, post_pr_comment
 from backend.fingerprint import AIFingerprinter
 from backend.scorer import VibeRiskScorer
 from backend.router import PromptRouter
-from backend.bedrock_client import BedrockClient
+from backend.llm_client import invoke_model_async
 from backend.compliance_mapper import ComplianceMapper
 from backend.scanners.secret_scanner import SecretScanner
 from backend.scanners.package_checker import PackageChecker
@@ -43,12 +43,16 @@ from backend.scanners.llm_antipattern import LLMAntiPatternScanner
 from backend.scanners.exploit_simulation import ExploitSimulator
 from backend.scanners.root_cause import RootCauseExplainer
 from backend.scanners.reputation_scorer import ReputationScorer
+from db_client import save_scan
+from storage_client import upload_report
 
 logger = logging.getLogger(__name__)
 
-BEDROCK_FIX_TIMEOUT = 15
-BEDROCK_TOTAL_TIMEOUT = 60
-MAX_BEDROCK_FIXES = 10
+LLM_FIX_TIMEOUT = 15
+LLM_TOTAL_TIMEOUT = 60
+MAX_LLM_FIXES = 10
+
+DISCORD_WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL", "")
 
 
 class ScanOrchestrator:
@@ -74,19 +78,8 @@ class ScanOrchestrator:
         self.compliance_mapper = ComplianceMapper()
         self.reputation_scorer = ReputationScorer()
 
-        # Bedrock + Router
+        # Router (cost tracking — adapts to Groq pricing)
         self.router = PromptRouter()
-        self.bedrock = BedrockClient(router=self.router)
-
-        # AWS services
-        region = os.getenv("AWS_REGION", "ap-south-1")
-        self.dynamodb = boto3.resource("dynamodb", region_name=region)
-        self.s3 = boto3.client("s3", region_name=region)
-        self.sns = boto3.client("sns", region_name=region)
-
-        self.table_name = os.getenv("DYNAMODB_TABLE_NAME", "redflagci-scans")
-        self.bucket_name = os.getenv("S3_BUCKET_NAME", "redflagci-reports-184574354000")
-        self.sns_topic_arn = os.getenv("SNS_TOPIC_ARN", "")
 
         self.metrics = {}
 
@@ -195,8 +188,8 @@ class ScanOrchestrator:
             try:
                 file_content = self._get_file_content(files, finding.get("file"))
                 exploit = await asyncio.wait_for(
-                    self.exploit_simulator.generate_exploit(finding, file_content, self.bedrock),
-                    timeout=BEDROCK_FIX_TIMEOUT,
+                    self.exploit_simulator.generate_exploit(finding, file_content),
+                    timeout=LLM_FIX_TIMEOUT,
                 )
                 if exploit:
                     finding["exploit_payload"] = exploit
@@ -215,7 +208,7 @@ class ScanOrchestrator:
                 continue
             try:
                 file_content = self._get_file_content(files, finding.get("file"))
-                root_cause = await self.root_cause_explainer.explain(finding, file_content, self.bedrock)
+                root_cause = await self.root_cause_explainer.explain(finding, file_content)
                 finding["root_cause"] = root_cause
             except Exception as e:
                 logger.warning("Root cause failed for %s: %s", finding.get("file"), e)
@@ -250,21 +243,21 @@ class ScanOrchestrator:
         ai_confidence = VibeRiskScorer.calculate_ai_confidence(files)
         reliability = VibeRiskScorer.calculate_reliability(all_findings, files)
 
-        # ─── Step 9: Generate AI fixes (routed) ────────────
+        # ─── Step 9: Generate AI fixes (via Groq) ──────────
         step_start = time.time()
-        logger.info("[9/9] Generating AI fixes via Bedrock (routed)...")
+        logger.info("[9/9] Generating AI fixes via Groq...")
         critical_high = [f for f in all_findings if f.get("severity") in ("CRITICAL", "HIGH")]
         fix_count = 0
 
-        for finding in critical_high[:MAX_BEDROCK_FIXES]:
+        for finding in critical_high[:MAX_LLM_FIXES]:
             elapsed = time.time() - step_start
-            if elapsed > BEDROCK_TOTAL_TIMEOUT:
+            if elapsed > LLM_TOTAL_TIMEOUT:
                 break
             try:
                 file_content = self._get_file_content(files, finding.get("file"))
                 ai_fix = await asyncio.wait_for(
-                    self.bedrock.generate_fix(finding, file_content),
-                    timeout=BEDROCK_FIX_TIMEOUT,
+                    self._generate_fix(finding, file_content),
+                    timeout=LLM_FIX_TIMEOUT,
                 )
                 if ai_fix and "Manual review" not in ai_fix and len(ai_fix) > 10:
                     finding["fix_code"] = ai_fix
@@ -272,7 +265,7 @@ class ScanOrchestrator:
             except (asyncio.TimeoutError, Exception) as e:
                 logger.warning("Fix gen skipped for %s: %s", finding.get("file"), e)
 
-        self.metrics["bedrock_fixes_ms"] = round((time.time() - step_start) * 1000)
+        self.metrics["llm_fixes_ms"] = round((time.time() - step_start) * 1000)
 
         # ─── Post PR Comment ──────────────────────────────
         auto_fix_pr_url = None
@@ -288,7 +281,7 @@ class ScanOrchestrator:
         )
         await post_pr_comment(repo, pr_number, comment_body)
 
-        # ─── Store results ────────────────────────────────
+        # ─── Store results in Supabase ────────────────────
         scan_record = VibeRiskScorer.build_scan_record(
             repo_id, pr_number, all_findings, files,
             auto_fix_pr_url=auto_fix_pr_url,
@@ -300,21 +293,18 @@ class ScanOrchestrator:
         scan_record["iac_findings"] = iac_findings
         scan_record["llm_antipattern_findings"] = llm_antipattern_findings
         scan_record["metrics"] = self.metrics
-        await self._store_results(scan_record)
+        await self._store_results(scan_record, repo_id, pr_number, score, severity_summary)
 
         # ─── Alert if critical ────────────────────────────
         if score > 80:
-            await self._send_alert(repo, pr_number, score, severity_summary)
+            await self._send_discord_alert(repo, pr_number, score, severity_summary)
 
         total_ms = round((time.time() - pipeline_start) * 1000)
         self.metrics["total_pipeline_ms"] = total_ms
         logger.info("═══════════════════════════════════════════════════")
         logger.info("  Score: %d/100 (%s) | AI Confidence: %d%% | Reliability: %s",
                      score, risk_level, ai_confidence, reliability)
-        logger.info("  Findings: %d | Cost: $%.4f (saved %d%%)",
-                     len(all_findings), cost_summary.get("bedrock_cost_usd", 0),
-                     cost_summary.get("cost_savings_pct", 0))
-        logger.info("  Total time: %dms", total_ms)
+        logger.info("  Findings: %d | Total time: %dms", len(all_findings), total_ms)
         logger.info("═══════════════════════════════════════════════════")
 
         return {
@@ -353,7 +343,6 @@ class ScanOrchestrator:
 
     def _extract_package_name(self, finding: dict) -> str | None:
         desc = finding.get("description", "")
-        # Extract package name from description patterns like "Package `xyz` does not exist"
         if "`" in desc:
             parts = desc.split("`")
             if len(parts) >= 2:
@@ -390,6 +379,44 @@ class ScanOrchestrator:
 
         return findings
 
+    async def _generate_fix(self, finding: dict, file_content: str) -> str:
+        """Generate a fix patch for a finding using Groq LLM."""
+        finding_type = finding.get("type", "")
+        description = finding.get("description", "")
+        filename = finding.get("file", "")
+        line = finding.get("line", 0)
+
+        type_specific = {
+            "SECRET": "Replace the hardcoded credential with an environment variable lookup.",
+            "PACKAGE": "Remove the hallucinated package and suggest the correct real package.",
+            "SQL": "Convert to a parameterized/prepared statement. Preserve query logic.",
+            "PROMPT": "Add input sanitization before user input reaches the LLM.",
+            "IAC": "Apply least-privilege. Replace wildcard permissions with specific actions.",
+            "GIT": "Provide git filter-repo command to purge from history + rotation steps.",
+            "LLM_ANTIPATTERN": "Fix the anti-pattern: add auth, restrict CORS, add rate limiting.",
+            "PIPELINE": "Pin actions to SHAs, restrict permissions, add timeout-minutes.",
+        }
+
+        prompt = f"""You are an expert security engineer. Fix the following vulnerability.
+
+Vulnerability Type: {finding_type}
+Severity: {finding.get('severity', 'HIGH')}
+File: {filename}
+Line: {line}
+Description: {description}
+"""
+        if file_content:
+            lines = file_content.split("\n")
+            start = max(0, line - 10)
+            end = min(len(lines), line + 10)
+            context = "\n".join(f"{i+start+1}: {l}" for i, l in enumerate(lines[start:end]))
+            prompt += f"\nCode context:\n```\n{context}\n```\n"
+
+        prompt += f"\nSpecific instruction: {type_specific.get(finding_type, 'Generate a secure fix.')}\n"
+        prompt += "\nReturn ONLY the corrected code. No explanations, no markdown."
+
+        return await invoke_model_async(prompt, max_tokens=1024)
+
     def _build_pr_comment(
         self, pr_number, findings, score, risk_level, summary,
         ai_file_count, total_file_count, scanner_errors,
@@ -406,7 +433,6 @@ class ScanOrchestrator:
 | 🔐 Security Risk | **{score}/100** |
 | 🤖 AI Confidence | **{ai_confidence}%** |
 | 📊 Code Reliability | **{reliability}** |
-| 💰 Scan Cost | **${cost_summary.get('bedrock_cost_usd', 0):.4f}** (saved {cost_summary.get('cost_savings_pct', 0)}% via routing) |
 
 | Severity | Count |
 |----------|-------|
@@ -453,7 +479,6 @@ class ScanOrchestrator:
                 if fline:
                     comment += f" (line {fline})"
 
-                # Compliance badges
                 violations = f.get("compliance_violations", [])
                 if violations:
                     badges = " ".join(f"`{v}`" for v in violations[:3])
@@ -462,7 +487,6 @@ class ScanOrchestrator:
                 comment += "\n"
                 comment += f"> {f.get('description', '')}\n"
 
-                # Exploit payload (CRITICAL only)
                 exploit = f.get("exploit_payload")
                 if exploit:
                     comment += f"\n<details><summary>⚔️ Exploit Proof-of-Concept</summary>\n\n"
@@ -470,7 +494,6 @@ class ScanOrchestrator:
                     comment += f"**Impact:** {exploit.get('impact', '')}\n\n"
                     comment += f"```bash\n{exploit.get('curl_example', '')}\n```\n</details>\n"
 
-                # Root cause
                 root = f.get("root_cause")
                 if root:
                     comment += f"\n<details><summary>🧠 Why AI Generated This</summary>\n\n"
@@ -478,30 +501,23 @@ class ScanOrchestrator:
                     comment += f"{root.get('why_llm_generated_this', '')}\n\n"
                     comment += f"**How to avoid:** {root.get('how_to_avoid', '')}\n</details>\n"
 
-                # Fix code
                 if f.get("fix_code"):
                     comment += f"\n<details><summary>💡 Suggested Fix</summary>\n\n```\n{f['fix_code']}\n```\n</details>\n"
 
                 comment += "\n"
 
-        # Scanner errors
         if scanner_errors:
             comment += "### ⚠️ Scanner Warnings\n\n"
             for err in scanner_errors:
                 comment += f"- {err}\n"
             comment += "\n"
 
-        # Performance
-        comment += "<details><summary>📊 Scan Performance & Cost</summary>\n\n"
+        comment += "<details><summary>📊 Scan Performance</summary>\n\n"
         comment += "| Engine | Time |\n|--------|------|\n"
         for key, value in self.metrics.items():
             if key.endswith("_ms"):
                 name = key.replace("_ms", "").replace("_", " ").title()
                 comment += f"| {name} | {value}ms |\n"
-        comment += f"\n| Bedrock Calls | {cost_summary.get('total_calls', 0)} ({cost_summary.get('haiku_calls', 0)} Haiku + {cost_summary.get('sonnet_calls', 0)} Sonnet) |\n"
-        comment += f"| Actual Cost | ${cost_summary.get('bedrock_cost_usd', 0):.4f} |\n"
-        comment += f"| Without Routing | ${cost_summary.get('bedrock_cost_without_routing_usd', 0):.4f} |\n"
-        comment += f"| Savings | {cost_summary.get('cost_savings_pct', 0)}% |\n"
         comment += "\n</details>\n\n"
 
         comment += """---
@@ -521,52 +537,56 @@ class ScanOrchestrator:
         except Exception as e:
             logger.error("Failed to post error comment: %s", e)
 
-    async def _store_results(self, scan_record):
+    async def _store_results(self, scan_record, repo_id: str, pr_number: int, score: int, severity_summary: dict):
+        """Store full report to Supabase Storage and summary to Supabase DB."""
+        # Upload full report JSON to Supabase Storage
+        report_url = ""
         try:
-            table = self.dynamodb.Table(self.table_name)
-            dynamo_item = {
-                "repo_id": scan_record["repo_id"],
-                "sort_key": f"{scan_record['pr_number']}#{scan_record['timestamp']}",
-                "pr_number": scan_record["pr_number"],
-                "vibe_risk_score": scan_record["vibe_risk_score"],
-                "risk_level": scan_record["risk_level"],
-                "ai_confidence_score": scan_record.get("ai_confidence_score", 0),
-                "code_reliability_score": scan_record.get("code_reliability_score", "LOW"),
+            report_url = upload_report(repo_id, pr_number, scan_record)
+            logger.info("Uploaded full report to Supabase Storage: %s", report_url)
+        except Exception as e:
+            logger.error("Storage upload failed (non-fatal): %s", e)
+
+        # Save summary record to Supabase DB
+        try:
+            db_record = {
+                "repo_id": repo_id,
                 "repo_full_name": scan_record.get("repo_full_name", ""),
-                "timestamp": scan_record["timestamp"],
-                "findings_summary": scan_record["findings_summary"],
-                "total_findings": scan_record["total_findings"],
+                "pr_number": pr_number,
+                "score": score,
+                "severity_counts": severity_summary,
+                "findings_count": scan_record.get("total_findings", 0),
+                "auto_fix_pr_url": scan_record.get("auto_fix_pr_url"),
+                "report_url": report_url,
             }
-            table.put_item(Item=dynamo_item)
+            save_scan(db_record)
+            logger.info("Saved scan summary to Supabase DB for PR #%d", pr_number)
         except Exception as e:
-            logger.error("DynamoDB storage failed (non-fatal): %s", e)
+            logger.error("DB save failed (non-fatal): %s", e)
 
-        try:
-            s3_key = f"reports/{scan_record['repo_id']}/{scan_record['pr_number']}/{scan_record['timestamp']}.json"
-            self.s3.put_object(
-                Bucket=self.bucket_name,
-                Key=s3_key,
-                Body=json.dumps(scan_record, default=str),
-                ContentType="application/json",
-            )
-        except Exception as e:
-            logger.error("S3 storage failed (non-fatal): %s", e)
-
-    async def _send_alert(self, repo, pr_number, score, summary):
-        if not self.sns_topic_arn:
+    async def _send_discord_alert(self, repo: str, pr_number: int, score: int, summary: dict):
+        """Send a Discord webhook alert when score exceeds threshold."""
+        if not DISCORD_WEBHOOK_URL:
             return
         try:
-            message = (
-                f"🚨 RedFlag CI Critical Alert\n\n"
-                f"Repository: {repo}\nPR: #{pr_number}\n"
-                f"Vibe Risk Score: {score}/100\n"
-                f"Critical: {summary['critical']}, High: {summary['high']}\n"
-                f"Time: {datetime.now(timezone.utc).isoformat()}"
-            )
-            self.sns.publish(
-                TopicArn=self.sns_topic_arn,
-                Subject=f"🚩 RedFlag CI: Score {score}/100 on {repo}",
-                Message=message,
-            )
+            payload = {
+                "embeds": [{
+                    "title": f"🚨 RedFlag CI Critical Alert — Score {score}/100",
+                    "description": (
+                        f"**Repository:** {repo}\n"
+                        f"**PR:** #{pr_number}\n"
+                        f"**Vibe Risk Score:** {score}/100\n"
+                        f"**Critical:** {summary['critical']} | **High:** {summary['high']}"
+                    ),
+                    "color": 0xFF0000,
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                }]
+            }
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                resp = await client.post(DISCORD_WEBHOOK_URL, json=payload)
+                if resp.status_code not in (200, 204):
+                    logger.warning("Discord webhook returned %d", resp.status_code)
+                else:
+                    logger.info("Discord alert sent for PR #%d (score %d)", pr_number, score)
         except Exception as e:
-            logger.error("SNS alert failed (non-fatal): %s", e)
+            logger.error("Discord alert failed (non-fatal): %s", e)

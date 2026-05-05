@@ -10,7 +10,8 @@ Converts RedFlag CI from a detection tool into a learning system.
 
 import json
 import logging
-import asyncio
+
+from backend.llm_client import invoke_model_async
 
 logger = logging.getLogger(__name__)
 
@@ -44,7 +45,7 @@ Return ONLY JSON, no explanations, no markdown.
 """
 
 # ─── Fallback Root Cause Templates ───────────────────────
-# Used when Bedrock is unavailable or times out
+# Used when LLM is unavailable or times out
 
 FALLBACK_ROOT_CAUSES = {
     "SECRET": {
@@ -99,24 +100,24 @@ class RootCauseExplainer:
         self,
         finding: dict,
         file_content: str = "",
-        bedrock_client=None,
+        bedrock_client=None,  # kept for signature compatibility, no longer used
     ) -> dict:
         """
         Generate root cause explanation for a finding.
-        
+
         Returns dict with: why_llm_generated_this, llm_behavioral_pattern,
         developer_mistake, how_to_avoid
         """
         finding_type = finding.get("type", "UNKNOWN")
 
-        # Try Bedrock for specific analysis
-        if bedrock_client and file_content:
+        # Try Groq LLM for specific analysis
+        if file_content:
             try:
-                result = await self._explain_via_bedrock(finding, file_content, bedrock_client)
+                result = await self._explain_via_llm(finding, file_content)
                 if result:
                     return result
             except Exception as e:
-                logger.warning("Bedrock root cause analysis failed: %s. Using fallback.", e)
+                logger.warning("LLM root cause analysis failed: %s. Using fallback.", e)
 
         # Fallback to templates
         fallback = FALLBACK_ROOT_CAUSES.get(finding_type)
@@ -131,13 +132,12 @@ class RootCauseExplainer:
             "how_to_avoid": "Always review AI-generated code for security issues before committing. Use RedFlag CI to automate this review."
         }
 
-    async def _explain_via_bedrock(
+    async def _explain_via_llm(
         self,
         finding: dict,
         file_content: str,
-        bedrock_client,
     ) -> dict | None:
-        """Generate root cause via Bedrock AI."""
+        """Generate root cause via Groq LLM."""
         line = finding.get("line", 0)
         lines = file_content.split("\n")
         start = max(0, line - 5)
@@ -152,7 +152,7 @@ class RootCauseExplainer:
             vulnerable_code=vulnerable_code[:3000],
         )
 
-        response = await asyncio.to_thread(bedrock_client._invoke_model, prompt)
+        response = await invoke_model_async(prompt, max_tokens=512)
 
         cleaned = response.strip()
         if cleaned.startswith("```"):

@@ -10,8 +10,6 @@ import ReactFlow, {
 import 'reactflow/dist/style.css'
 
 import Navbar from '../components/shared/Navbar'
-import ParticleBackground from '../components/shared/ParticleBackground'
-import GradientOrb from '../components/shared/GradientOrb'
 import ScanSummaryBar from '../components/scan/ScanSummaryBar'
 import FindingsList from '../components/scan/FindingsList'
 import FindingPanel from '../components/scan/FindingPanel'
@@ -95,8 +93,6 @@ export default function ScanDetail() {
 
   return (
     <div className="min-h-screen bg-bg relative">
-      <ParticleBackground />
-      <GradientOrb />
 
       <div className="relative z-10 flex flex-col min-h-screen">
         <Navbar />

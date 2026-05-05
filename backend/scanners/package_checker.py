@@ -2,8 +2,8 @@
 package_checker.py — Hallucinated Package Detector
 Owner: Nikhil Virdi (NV)
 
-Cross-references every dependency in package.json and requirements.txt
-against live npm and PyPI registries. Packages that return non-200
+Cross-references every dependency in package.json, requirements.txt,
+pom.xml, go.mod, and Cargo.toml against live registries. Packages that return non-200
 responses are flagged as hallucinated — potential supply chain attack vectors.
 """
 
@@ -16,6 +16,9 @@ logger = logging.getLogger(__name__)
 
 NPM_REGISTRY = "https://registry.npmjs.org/{}"
 PYPI_REGISTRY = "https://pypi.org/pypi/{}/json"
+MAVEN_REGISTRY = "https://search.maven.org/solrsearch/select?q=g:{}+AND+a:{}&rows=1&wt=json"
+GO_REGISTRY = "https://pkg.go.dev/{}"
+CARGO_REGISTRY = "https://crates.io/api/v1/crates/{}"
 
 # Cache to avoid redundant lookups within a single scan
 _registry_cache: dict[str, bool] = {}
@@ -32,7 +35,6 @@ OFFLINE_SAFE_NPM_PACKAGES = {
 
 
 async def _check_npm(package_name: str, client: httpx.AsyncClient) -> bool:
-    """Returns True if the package exists on npm, False if hallucinated."""
     cache_key = f"npm:{package_name}"
     if cache_key in _registry_cache:
         return _registry_cache[cache_key]
@@ -50,7 +52,6 @@ async def _check_npm(package_name: str, client: httpx.AsyncClient) -> bool:
 
 
 async def _check_pypi(package_name: str, client: httpx.AsyncClient) -> bool:
-    """Returns True if the package exists on PyPI, False if hallucinated."""
     cache_key = f"pypi:{package_name}"
     if cache_key in _registry_cache:
         return _registry_cache[cache_key]
@@ -64,9 +65,64 @@ async def _check_pypi(package_name: str, client: httpx.AsyncClient) -> bool:
         logger.warning("PyPI lookup failed for '%s': %s", package_name, e)
         return True
 
+async def _check_maven(group_id: str, artifact_id: str, client: httpx.AsyncClient) -> bool:
+    cache_key = f"maven:{group_id}:{artifact_id}"
+    if cache_key in _registry_cache:
+        return _registry_cache[cache_key]
+    
+    try:
+        resp = await client.get(MAVEN_REGISTRY.format(group_id, artifact_id), timeout=10.0)
+        if resp.status_code == 200:
+            data = resp.json()
+            exists = data.get("response", {}).get("numFound", 0) > 0
+        else:
+            exists = False
+        _registry_cache[cache_key] = exists
+        return exists
+    except Exception as e:
+        logger.warning("Maven lookup failed for '%s:%s': %s", group_id, artifact_id, e)
+        return True
+
+async def _check_go(module_path: str, client: httpx.AsyncClient) -> bool:
+    cache_key = f"go:{module_path}"
+    if cache_key in _registry_cache:
+        return _registry_cache[cache_key]
+    
+    try:
+        resp = await client.get(GO_REGISTRY.format(module_path), follow_redirects=True, timeout=10.0)
+        if resp.status_code == 200:
+            exists = True
+        elif resp.status_code == 404:
+            exists = False
+        else:
+            exists = True
+        _registry_cache[cache_key] = exists
+        return exists
+    except Exception as e:
+        logger.warning("Go lookup failed for '%s': %s", module_path, e)
+        return True
+
+async def _check_cargo(name: str, client: httpx.AsyncClient) -> bool:
+    cache_key = f"cargo:{name}"
+    if cache_key in _registry_cache:
+        return _registry_cache[cache_key]
+    
+    try:
+        resp = await client.get(CARGO_REGISTRY.format(name), timeout=10.0)
+        if resp.status_code == 200:
+            exists = True
+        elif resp.status_code == 404:
+            exists = False
+        else:
+            exists = True
+        _registry_cache[cache_key] = exists
+        return exists
+    except Exception as e:
+        logger.warning("Cargo lookup failed for '%s': %s", name, e)
+        return True
+
 
 def _extract_npm_deps(content: str) -> list[str]:
-    """Extract all dependency names from a package.json file."""
     try:
         data = json.loads(content)
         deps = list(data.get("dependencies", {}).keys())
@@ -79,24 +135,66 @@ def _extract_npm_deps(content: str) -> list[str]:
 
 
 def _extract_pip_deps(content: str) -> list[str]:
-    """Extract package names from a requirements.txt file."""
     deps = []
     for line in content.split("\n"):
         line = line.strip()
         if not line or line.startswith("#") or line.startswith("-"):
             continue
-        # Parse 'package==1.0.0', 'package>=1.0', 'package'
         match = re.match(r"^([a-zA-Z0-9_-]+)", line)
         if match:
             deps.append(match.group(1))
     return deps
 
+def _extract_maven_deps(content: str) -> list[tuple[str, str]]:
+    deps = []
+    blocks = re.findall(r"<dependency>(.*?)</dependency>", content, re.DOTALL)
+    for block in blocks:
+        group_match = re.search(r"<groupId>(.*?)</groupId>", block)
+        artifact_match = re.search(r"<artifactId>(.*?)</artifactId>", block)
+        if group_match and artifact_match:
+            deps.append((group_match.group(1).strip(), artifact_match.group(1).strip()))
+    return deps
+
+def _extract_go_deps(content: str) -> list[str]:
+    deps = []
+    in_require = False
+    for line in content.split("\n"):
+        line = line.strip()
+        if not line or line.startswith("//"): continue
+        if line.startswith("require ("):
+            in_require = True
+            continue
+        if in_require and line == ")":
+            in_require = False
+            continue
+        
+        if in_require:
+            parts = line.split()
+            if parts:
+                deps.append(parts[0])
+        elif line.startswith("require "):
+            parts = line.split()
+            if len(parts) >= 2:
+                deps.append(parts[1])
+    return deps
+
+def _extract_cargo_deps(content: str) -> list[str]:
+    deps = []
+    in_deps = False
+    for line in content.split("\n"):
+        line = line.strip()
+        if not line or line.startswith("#"): continue
+        if line.startswith("["):
+            in_deps = "dependencies" in line
+            continue
+        
+        if in_deps and "=" in line:
+            name = line.split("=")[0].strip()
+            deps.append(name)
+    return deps
+
 
 def _offline_npm_exists(package_name: str) -> bool:
-    """
-    Deterministic fallback for offline environments.
-    Prefer known-good packages and flag obviously AI-sounding helper names.
-    """
     normalized = package_name.strip().lower()
     if normalized in OFFLINE_SAFE_NPM_PACKAGES:
         return True
@@ -111,10 +209,9 @@ def _offline_npm_exists(package_name: str) -> bool:
 
 
 class PackageChecker:
-    """Checks npm and PyPI registries to detect hallucinated packages."""
+    """Checks registries to detect hallucinated packages."""
 
     async def run(self, files: list[dict]) -> list[dict]:
-        """Run package verification across all dependency files."""
         findings = []
 
         async with httpx.AsyncClient() as client:
@@ -125,7 +222,6 @@ class PackageChecker:
                 if not content:
                     continue
 
-                # npm packages
                 if filename.endswith("package.json"):
                     deps = _extract_npm_deps(content)
                     for dep in deps:
@@ -141,10 +237,9 @@ class PackageChecker:
                                     "This is a common AI hallucination. If an attacker registers this name with "
                                     "malicious code, anyone running `npm install` will be compromised."
                                 ),
-                                "fix_code": f"// Remove '{dep}' from package.json dependencies.\n// Verify the correct package name on npmjs.com.",
+                                "fix_code": f"// Remove '{dep}' from package.json dependencies.\\n// Verify the correct package name on npmjs.com.",
                             })
 
-                # PyPI packages
                 if filename.endswith("requirements.txt") or filename.endswith("pyproject.toml"):
                     deps = _extract_pip_deps(content)
                     for dep in deps:
@@ -159,7 +254,51 @@ class PackageChecker:
                                     f"Hallucinated package detected: '{dep}' does not exist on PyPI. "
                                     "An attacker could register this package name with malicious code."
                                 ),
-                                "fix_code": f"# Remove '{dep}' from requirements.\n# Find the correct package at pypi.org.",
+                                "fix_code": f"# Remove '{dep}' from requirements.\\n# Find the correct package at pypi.org.",
+                            })
+
+                if filename.endswith("pom.xml"):
+                    deps = _extract_maven_deps(content)
+                    for group_id, artifact_id in deps:
+                        if "$" in group_id or "$" in artifact_id: continue
+                        exists = await _check_maven(group_id, artifact_id, client)
+                        if not exists:
+                            pkg_name = f"{group_id}:{artifact_id}"
+                            findings.append({
+                                "type": "PACKAGE",
+                                "severity": "CRITICAL",
+                                "file": filename,
+                                "line": 1,
+                                "description": f"Package '{pkg_name}' not found in maven registry",
+                                "fix_code": f"<!-- Remove {pkg_name} from pom.xml -->"
+                            })
+
+                if filename.endswith("go.mod"):
+                    deps = _extract_go_deps(content)
+                    for dep in deps:
+                        exists = await _check_go(dep, client)
+                        if not exists:
+                            findings.append({
+                                "type": "PACKAGE",
+                                "severity": "CRITICAL",
+                                "file": filename,
+                                "line": 1,
+                                "description": f"Package '{dep}' not found in go registry",
+                                "fix_code": f"// Remove '{dep}' from go.mod require block."
+                            })
+                            
+                if filename.endswith("Cargo.toml"):
+                    deps = _extract_cargo_deps(content)
+                    for dep in deps:
+                        exists = await _check_cargo(dep, client)
+                        if not exists:
+                            findings.append({
+                                "type": "PACKAGE",
+                                "severity": "CRITICAL",
+                                "file": filename,
+                                "line": 1,
+                                "description": f"Package '{dep}' not found in cargo registry",
+                                "fix_code": f"# Remove '{dep}' from Cargo.toml dependencies."
                             })
 
         logger.info("PackageChecker found %d hallucinated packages.", len(findings))

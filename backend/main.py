@@ -16,10 +16,11 @@ import hmac
 import hashlib
 from datetime import datetime, timezone
 
-import boto3
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from boto3.dynamodb.conditions import Key
+
+from db_client import save_scan, get_scans_by_repo, get_scan_by_pr, get_all_scans
+from storage_client import upload_report, download_report
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
@@ -36,23 +37,11 @@ app.add_middleware(
         os.getenv("FRONTEND_URL", "http://localhost:5173"),
         "http://localhost:5173",
     ],
-    allow_origin_regex=r"https://.*\.amplifyapp\.com",
+    allow_origin_regex=r"https://.*\.vercel\.app|https://.*\.netlify\.app|https://.*\.amplifyapp\.com",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-REGION = os.getenv("AWS_REGION", "ap-south-1")
-TABLE_NAME = os.getenv("DYNAMODB_TABLE_NAME", "redflagci-scans")
-BUCKET_NAME = os.getenv("S3_BUCKET_NAME", "redflagci-reports-184574354000")
-
-
-def _get_dynamodb_table():
-    return boto3.resource("dynamodb", region_name=REGION).Table(TABLE_NAME)
-
-
-def _get_s3_client():
-    return boto3.client("s3", region_name=REGION)
 
 
 def _verify_webhook_signature(payload_body: str, signature_header: str) -> bool:
@@ -96,31 +85,26 @@ async def get_repo_scans(repo_id: str):
     v2: includes ai_confidence_score and code_reliability_score
     """
     try:
-        table = _get_dynamodb_table()
-        response = table.query(
-            KeyConditionExpression=Key("repo_id").eq(repo_id),
-            ScanIndexForward=False,
-            Limit=50,
-        )
-        items = response.get("Items", [])
+        items = get_scans_by_repo(repo_id)
 
         scans = []
         for item in items:
+            findings_summary = item.get("severity_counts") or item.get("findings_summary") or {}
             scans.append({
                 "repo_id": repo_id,
                 "repo_full_name": item.get("repo_full_name", repo_id),
                 "pr_number": int(item.get("pr_number", 0)),
-                "vibe_risk_score": int(item.get("vibe_risk_score", 0)),
+                "vibe_risk_score": int(item.get("score", item.get("vibe_risk_score", 0))),
                 "ai_confidence_score": int(item.get("ai_confidence_score", 0)),
                 "code_reliability_score": item.get("code_reliability_score", "LOW"),
-                "timestamp": item.get("timestamp", ""),
+                "timestamp": item.get("created_at", item.get("timestamp", "")),
                 "findings_summary": {
-                    "critical": int(item.get("findings_summary", {}).get("critical", 0)),
-                    "high": int(item.get("findings_summary", {}).get("high", 0)),
-                    "medium": int(item.get("findings_summary", {}).get("medium", 0)),
-                    "low": int(item.get("findings_summary", {}).get("low", 0)),
+                    "critical": int(findings_summary.get("critical", 0)),
+                    "high": int(findings_summary.get("high", 0)),
+                    "medium": int(findings_summary.get("medium", 0)),
+                    "low": int(findings_summary.get("low", 0)),
                 },
-                "s3_report_key": f"reports/{repo_id}/{item.get('pr_number', 0)}/{item.get('timestamp', '')}.json",
+                "report_url": item.get("report_url", ""),
             })
 
         return scans
@@ -137,28 +121,28 @@ async def get_scan_detail(repo_id: str, pr_number: int):
     v2 schema: includes exploit_payload, root_cause, compliance, reputation, cost
     """
     try:
-        s3 = _get_s3_client()
-        prefix = f"reports/{repo_id}/{pr_number}/"
-        response = s3.list_objects_v2(Bucket=BUCKET_NAME, Prefix=prefix)
+        # Try DB first for summary, then storage for full report
+        db_record = get_scan_by_pr(repo_id, pr_number)
+        report = download_report(repo_id, pr_number)
 
-        if "Contents" not in response or not response["Contents"]:
+        if not report and not db_record:
             raise HTTPException(status_code=404, detail=f"No scan found for PR #{pr_number}")
 
-        latest_key = sorted(response["Contents"], key=lambda x: x["LastModified"], reverse=True)[0]["Key"]
-        obj = s3.get_object(Bucket=BUCKET_NAME, Key=latest_key)
-        report = json.loads(obj["Body"].read().decode("utf-8"))
+        # Merge: storage report takes precedence for full detail
+        if not report:
+            report = db_record
 
         # Build v2 response
         return {
             "repo_id": repo_id,
             "repo_full_name": report.get("repo_full_name", repo_id),
             "pr_number": report.get("pr_number", pr_number),
-            "vibe_risk_score": report.get("vibe_risk_score", 0),
+            "vibe_risk_score": report.get("vibe_risk_score", report.get("score", 0)),
             "ai_confidence_score": report.get("ai_confidence_score", 0),
             "code_reliability_score": report.get("code_reliability_score", "LOW"),
-            "timestamp": report.get("timestamp", ""),
+            "timestamp": report.get("timestamp", report.get("created_at", "")),
 
-            # Cost routing
+            # Cost routing (kept for UI compatibility — values are 0 on free stack)
             "bedrock_cost_usd": report.get("cost_summary", {}).get("bedrock_cost_usd", 0),
             "bedrock_cost_without_routing_usd": report.get("cost_summary", {}).get("bedrock_cost_without_routing_usd", 0),
             "cost_savings_pct": report.get("cost_summary", {}).get("cost_savings_pct", 0),
@@ -186,14 +170,14 @@ async def get_scan_detail(repo_id: str, pr_number: int):
                     # v2: Reputation (PACKAGE only)
                     "reputation": f.get("reputation"),
 
-                    # v2: WAF + cost (IAC only, from MDA)
+                    # v2: WAF + cost (IAC only)
                     "waf_pillar": f.get("waf_pillar"),
                     "cost_impact": f.get("cost_impact"),
                 }
                 for f in report.get("findings", [])
             ],
 
-            # Pipeline findings (separate array, from MDA)
+            # Pipeline findings (separate array)
             "pipeline_findings": report.get("pipeline_findings", []),
 
             "auto_fix_pr_url": report.get("auto_fix_pr_url"),
@@ -214,7 +198,7 @@ async def get_scan_detail(repo_id: str, pr_number: int):
         raise HTTPException(status_code=500, detail=f"Failed to fetch scan detail: {str(e)}")
 
 
-# ─── Webhook (local dev) ──────────────────────────────────
+# ─── Webhook ──────────────────────────────────────────────
 
 @app.post("/webhook")
 async def receive_webhook(request: Request):
@@ -258,4 +242,4 @@ async def receive_webhook(request: Request):
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000, reload=True)
+    uvicorn.run("main:app", host="0.0.0.0", port=int(os.environ.get("PORT", 8000)), reload=False)
